@@ -14,7 +14,17 @@
 
 set -euo pipefail
 
-SRC="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks (Homebrew links this script into bin) so sibling files are
+# found next to the real script.
+self="$0"
+while [ -L "$self" ]; do
+  target="$(readlink "$self")"
+  case "$target" in
+    /*) self="$target" ;;
+    *) self="$(dirname "$self")/$target" ;;
+  esac
+done
+SRC="$(cd "$(dirname "$self")" && pwd)"
 PREFIX="${PREFIX:-$HOME/.local/share/mail-cleanup}"
 SCHEDULE=""
 MENUBAR=1

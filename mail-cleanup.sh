@@ -13,5 +13,15 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks (Homebrew links this script into bin) so sibling files are
+# found next to the real script.
+self="$0"
+while [ -L "$self" ]; do
+  target="$(readlink "$self")"
+  case "$target" in
+    /*) self="$target" ;;
+    *) self="$(dirname "$self")/$target" ;;
+  esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$self")" && pwd)"
 MAIL_CLEANUP_CLI=1 MAIL_CLEANUP_ARGS="$*" exec osascript "$SCRIPT_DIR/mail-cleanup.applescript"

@@ -23,6 +23,16 @@ Everything is logged to `~/Library/Logs/mail-cleanup.log`.
 
 ## Install
 
+With Homebrew:
+
+```bash
+brew install jtannahill/tap/mail-cleanup
+mail-cleanup-setup                  # builds the app, starts the menubar
+mail-cleanup-setup --schedule 06:00 # also run "--all" every day at 6 am
+```
+
+Or from source:
+
 ```bash
 git clone https://github.com/jtannahill/mail-cleanup.git
 cd mail-cleanup
@@ -133,7 +143,7 @@ shellcheck install.sh uninstall.sh build-app.sh mail-cleanup.sh
 ## Uninstall
 
 ```bash
-./uninstall.sh
+./uninstall.sh            # or: mail-cleanup-uninstall && brew uninstall mail-cleanup
 ```
 
 Removes the agents, the app and the install prefix. Your rules file and logs
