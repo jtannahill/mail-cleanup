@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 import rumps
+from AppKit import NSApplication
 from PyObjCTools import AppHelper
 
 BIN = Path(__file__).resolve().parent
@@ -134,6 +135,14 @@ def remove_rule(rule):
     RULES.write_text("\n".join(kept) + ("\n" if kept else ""))
 
 
+def item(title, callback=None, tip=None):
+    """rumps.MenuItem with an optional hover tooltip (NSMenuItem toolTip)."""
+    mi = rumps.MenuItem(title, callback=callback)
+    if tip:
+        mi._menuitem.setToolTip_(tip)
+    return mi
+
+
 class MailCleanupMenuBar(rumps.App):
     def __init__(self):
         super().__init__("✉", quit_button=None)
@@ -146,10 +155,14 @@ class MailCleanupMenuBar(rumps.App):
         self.menu = [
             self.status_item,
             None,
-            rumps.MenuItem("Clear Matched", callback=self.clear_matched),
-            rumps.MenuItem("Clear Junk", callback=self.clear_junk),
-            rumps.MenuItem("Clear Deleted", callback=self.clear_deleted),
-            rumps.MenuItem("Clear All", callback=self.clear_all),
+            item("Clear Matched", self.clear_matched,
+                 "Move inbox messages that match your rules to the Trash."),
+            item("Clear Junk", self.clear_junk,
+                 "Move everything in Junk/Spam in every account to the Trash."),
+            item("Clear Deleted", self.clear_deleted,
+                 "Permanently empty the Trash in every account. Needs Accessibility."),
+            item("Clear All", self.clear_all,
+                 "Rules, then Junk, then Deleted, in one pass."),
             None,
             self._build_rules_menu(),
             None,
@@ -192,21 +205,38 @@ class MailCleanupMenuBar(rumps.App):
         # clear() on a fresh submenu raises. Guard against that first fill.
         if len(menu):
             menu.clear()
-        menu.add(rumps.MenuItem("Add Sender Rule…", callback=self.add_sender_rule))
-        menu.add(rumps.MenuItem("Add Subject Rule…", callback=self.add_subject_rule))
-        menu.add(rumps.MenuItem("Edit Rules File", callback=self.open_rules))
+        menu.add(item(
+            "Add Sender Rule…", self.add_sender_rule,
+            "Trash inbox mail whose sender (name or address) contains the text.\n"
+            "Case-insensitive, partial match.\n"
+            "Examples: news@example.com, @marketing.example.net, Acme Sales",
+        ))
+        menu.add(item(
+            "Add Subject Rule…", self.add_subject_rule,
+            "Trash inbox mail whose subject contains the text.\n"
+            "Case-insensitive, partial match.\n"
+            "Examples: Weekly Digest, your invoice, [Newsletter]",
+        ))
+        menu.add(item(
+            "Edit Rules File", self.open_rules,
+            f"Open {RULES} in your editor.\n"
+            "One rule per line: from:<text> or subject:<text>. Lines starting with # are comments.",
+        ))
         rules = load_rules()
         if rules:
             menu.add(None)
             for rule in rules:
-                item = rumps.MenuItem(rule, callback=self._remove_rule_callback(rule))
-                menu.add(item)
+                menu.add(item(
+                    rule, self._remove_rule_callback(rule),
+                    "Click to remove this rule.",
+                ))
 
     def _refresh_rules_menu(self):
         self._fill_rules_menu(self.menu["Rules"])
 
     def _remove_rule_callback(self, rule):
         def cb(_):
+            self._bring_to_front()
             answer = rumps.alert(
                 "Remove rule?", rule, ok="Remove", cancel="Cancel"
             )
@@ -216,10 +246,19 @@ class MailCleanupMenuBar(rumps.App):
                 self.refresh_now(None)
         return cb
 
+    @staticmethod
+    def _bring_to_front():
+        # An accessory (menubar-only) app is never the active app, so a
+        # dialog it opens does not receive keystrokes unless we activate it
+        # right before showing the window.
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+
     def _prompt_rule(self, kind, title, message):
         win = rumps.Window(
             message=message, title=title, ok="Add", cancel="Cancel", dimensions=(320, 24)
         )
+        self._bring_to_front()
+        win._alert.window().makeFirstResponder_(win._textfield)
         resp = win.run()
         if resp.clicked != 1:
             return
@@ -240,6 +279,7 @@ class MailCleanupMenuBar(rumps.App):
             body = "Could not count matches (is Mail running?). Add anyway?"
         else:
             body = f"Matches {n} inbox message{'s' if n != 1 else ''} right now. Add it?"
+        self._bring_to_front()
         answer = rumps.alert("Add rule?", f"{rule}\n\n{body}", ok="Add", cancel="Cancel")
         if answer == 1:
             add_rule(*rule.split(":", 1))
@@ -249,13 +289,17 @@ class MailCleanupMenuBar(rumps.App):
     def add_sender_rule(self, _):
         self._prompt_rule(
             "from", "Add Sender Rule",
-            "Trash inbox mail whose sender contains (case-insensitive):",
+            "Trash inbox mail whose sender contains this text.\n"
+            "Matches the display name or address, case-insensitive, partial match.\n"
+            "Examples: news@example.com   @marketing.example.net   Acme Sales",
         )
 
     def add_subject_rule(self, _):
         self._prompt_rule(
             "subject", "Add Subject Rule",
-            "Trash inbox mail whose subject contains (case-insensitive):",
+            "Trash inbox mail whose subject contains this text.\n"
+            "Case-insensitive, partial match. Re: and Fwd: prefixes still match.\n"
+            "Examples: Weekly Digest   your invoice   [Newsletter]",
         )
 
     def open_rules(self, _):

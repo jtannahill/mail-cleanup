@@ -19,6 +19,9 @@ def mod(tmp_path, monkeypatch):
 
     class _Stub:
         def __init__(self, *a, **k):
+            self._menuitem = self
+
+        def setToolTip_(self, _):
             pass
 
     for name in ("App", "MenuItem", "Window"):
@@ -28,6 +31,9 @@ def mod(tmp_path, monkeypatch):
     rumps.notification = lambda *a, **k: None
     rumps.quit_application = lambda: None
     monkeypatch.setitem(sys.modules, "rumps", rumps)
+    appkit = types.ModuleType("AppKit")
+    appkit.NSApplication = _Stub
+    monkeypatch.setitem(sys.modules, "AppKit", appkit)
     helper = types.ModuleType("PyObjCTools.AppHelper")
     helper.callAfter = lambda f, *a: f(*a)
     pkg = types.ModuleType("PyObjCTools")
