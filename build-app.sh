@@ -31,6 +31,14 @@ fi
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" \
   "$APP/Contents/Info.plist" 2>/dev/null || true
 
+# osacompile leaves the bundle without an identifier, so macOS keys its TCC
+# grants on the file path alone. A stable identifier keeps them addressable
+# (tccutil reset Accessibility com.mail-cleanup.app) and more resilient.
+/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.mail-cleanup.app" \
+  "$APP/Contents/Info.plist" 2>/dev/null || \
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.mail-cleanup.app" \
+  "$APP/Contents/Info.plist"
+
 # osacompile ad-hoc signs the bundle, and editing Info.plist afterwards breaks
 # that seal. tccd then cannot compute a code requirement for the app, so it
 # neither prompts for nor honors Automation/Accessibility grants and every

@@ -106,6 +106,8 @@ compiled into `Mail Cleanup.app` and everything that erases goes through it.
   `build-app.sh` re-signs; run it again.
 - **"Mail Cleanup is not allowed assistive access"**: add or re-add the app
   under Accessibility. Every rebuild invalidates the old grant.
+- Reset a stuck grant: `tccutil reset Accessibility com.mail-cleanup.app` (or
+  `tccutil reset AppleEvents com.mail-cleanup.app`), then grant again.
 - Watch macOS decide: `log stream --predicate 'process == "tccd" OR process == "applet"'`.
 
 ## Development
