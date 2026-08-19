@@ -14,12 +14,15 @@ on run
     if anArg is "--trash" then set mode to "trash"
     if anArg is "--all" then set mode to "all"
     if anArg is "--rules" then set mode to "rules"
+    if anArg is "--senders" then set mode to "senders"
     if anArg is "--dry-run" then set dryRun to true
     if anArg is "--quiet" then set quiet to true
     if anArg is "-h" or anArg is "--help" then
-      return "Apple Mail cleanup across all accounts." & linefeed & linefeed & "Usage:" & linefeed & "  mail-cleanup.sh [--rules|--junk|--trash|--all] [--dry-run] [--quiet]" & linefeed & linefeed & "Options:" & linefeed & "  --rules     Trash inbox mail matching ~/.config/mail-cleanup/rules.txt" & linefeed & "  --junk      Erase junk/spam in all accounts" & linefeed & "  --trash     Erase deleted/trash items in all accounts" & linefeed & "  --all       Erase both (default)" & linefeed & "  --dry-run   Report counts without erasing" & linefeed & "  --quiet     Log only; no stdout summary" & linefeed & "  -h, --help  Show this help"
+      return "Apple Mail cleanup across all accounts." & linefeed & linefeed & "Usage:" & linefeed & "  mail-cleanup.sh [--rules|--junk|--trash|--all] [--dry-run] [--quiet]" & linefeed & linefeed & "Options:" & linefeed & "  --rules     Trash inbox mail matching ~/.config/mail-cleanup/rules.txt" & linefeed & "  --senders   Print the sender of every inbox message (for Top Senders)" & linefeed & "  --junk      Erase junk/spam in all accounts" & linefeed & "  --trash     Erase deleted/trash items in all accounts" & linefeed & "  --all       Erase both (default)" & linefeed & "  --dry-run   Report counts without erasing" & linefeed & "  --quiet     Log only; no stdout summary" & linefeed & "  -h, --help  Show this help"
     end if
   end repeat
+
+  if mode is "senders" then return my dumpSenders()
 
   set logPath to (POSIX path of (path to home folder)) & "Library/Logs/mail-cleanup.log"
   my rotateLog(logPath)
@@ -138,17 +141,41 @@ on loadRules()
   repeat with aLine in paragraphs of raw
     set t to my trimText(aLine as text)
     if t is not "" and t does not start with "#" then
+      set olderDays to 0
+      -- Optional trailing qualifier: "older:30d" limits the rule to mail
+      -- received more than N days ago.
+      if t contains " older:" then
+        set AppleScript's text item delimiters to " older:"
+        set parts to text items of t
+        set AppleScript's text item delimiters to ""
+        set t to my trimText(item 1 of parts)
+        set q to my trimText(item 2 of parts)
+        if q ends with "d" then set q to text 1 thru -2 of q
+        try
+          set olderDays to q as integer
+        end try
+      end if
       if t starts with "from:" then
         set v to my trimText(text 6 thru -1 of t)
-        if v is not "" then set end of ruleList to {"from", v}
+        if v is not "" then set end of ruleList to {"from", v, olderDays}
       else if t starts with "subject:" then
         set v to my trimText(text 9 thru -1 of t)
-        if v is not "" then set end of ruleList to {"subject", v}
+        if v is not "" then set end of ruleList to {"subject", v, olderDays}
+      else if t starts with "keep:" then
+        set v to my trimText(text 6 thru -1 of t)
+        if v is not "" then set end of ruleList to {"keep", v, 0}
       end if
     end if
   end repeat
   return ruleList
 end loadRules
+
+on hasTrashRules(ruleList)
+  repeat with aRule in ruleList
+    if (item 1 of aRule) is not "keep" then return true
+  end repeat
+  return false
+end hasTrashRules
 
 on trimText(t)
   repeat while t is not "" and (character 1 of t is space or character 1 of t is tab)
@@ -181,29 +208,67 @@ end escapeForSource
 
 on buildMatcher(ruleList)
   set clauses to {}
+  set keeps to {}
+  set cutoffLines to ""
+  set n to 0
   repeat with aRule in ruleList
+    set kindOf to item 1 of aRule
     set needle to my escapeForSource(item 2 of aRule)
-    if (item 1 of aRule) is "from" then
-      set end of clauses to "sender contains \"" & needle & "\""
+    set olderDays to item 3 of aRule
+    if kindOf is "keep" then
+      set end of keeps to "sender contains \"" & needle & "\""
     else
-      set end of clauses to "subject contains \"" & needle & "\""
+      set n to n + 1
+      if kindOf is "from" then
+        set c to "sender contains \"" & needle & "\""
+      else
+        set c to "subject contains \"" & needle & "\""
+      end if
+      if olderDays > 0 then
+        -- `whose` needs a concrete date, so compute it in the generated
+        -- handler rather than inline in the filter.
+        set cutoffLines to cutoffLines & "set cutoff" & n & " to (current date) - " & olderDays & " * days" & linefeed
+        set c to "(" & c & " and date received < cutoff" & n & ")"
+      end if
+      set end of clauses to c
     end if
   end repeat
   set AppleScript's text item delimiters to " or "
-  set filterText to clauses as text
+  set filterText to "(" & (clauses as text) & ")"
+  if (count of keeps) > 0 then
+    set filterText to filterText & " and not (" & (keeps as text) & ")"
+  end if
   set AppleScript's text item delimiters to ""
   set src to "script matcher" & linefeed & ¬
-    "on matchIn(mb)" & linefeed & ¬
+    "on matchIn(mb)" & linefeed & cutoffLines & ¬
     "tell application \"Mail\" to return every message of mb whose (" & filterText & ")" & linefeed & ¬
     "end matchIn" & linefeed & ¬
     "end script" & linefeed & "return matcher"
   return run script src
 end buildMatcher
 
+-- Prints one line per inbox message: the sender string. The menubar tallies
+-- these for its Top Senders list; AppleScript has no fast dictionary.
+on dumpSenders()
+  set AppleScript's text item delimiters to linefeed
+  set out to {}
+  tell application "Mail"
+    if not running then launch
+    repeat with acct in every account
+      repeat with inboxBox in (every mailbox of acct whose name is "INBOX" or name is "Inbox")
+        set out to out & (sender of every message of inboxBox)
+      end repeat
+    end repeat
+  end tell
+  set txt to out as text
+  set AppleScript's text item delimiters to ""
+  return txt
+end dumpSenders
+
 -- Returns {totalCount, detailText}; detail lines are account/Inbox/count.
 on countRuleMatches()
   set ruleList to my loadRules()
-  if (count of ruleList) is 0 then return {0, ""}
+  if not my hasTrashRules(ruleList) then return {0, ""}
   set matcher to my buildMatcher(ruleList)
   set totalCount to 0
   set details to ""
@@ -226,7 +291,7 @@ end countRuleMatches
 -- Moves matched inbox messages to the account trash (Mail's `delete`).
 on eraseRuleMatches(logPath)
   set ruleList to my loadRules()
-  if (count of ruleList) is 0 then return 0
+  if not my hasTrashRules(ruleList) then return 0
   set matcher to my buildMatcher(ruleList)
   set failures to 0
   tell application "Mail"

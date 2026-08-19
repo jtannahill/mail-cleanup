@@ -9,6 +9,7 @@ osascript runs on a worker thread and marshals its result back.
 import os
 import re
 import subprocess
+from collections import Counter
 import threading
 from pathlib import Path
 
@@ -32,10 +33,16 @@ COUNT_TIMEOUT = 120
 ERASE_TIMEOUT = 600
 
 COUNT_PATTERN = re.compile(r"^(Rules|Junk|Trash): would erase (\d+) messages")
+DETAIL_PATTERN = re.compile(r"^(.+?)/(.+?): (\d+)$")
+ADDRESS_PATTERN = re.compile(r"<([^>]+)>")
+TOP_SENDERS = 12
 
 
 def _run(args, timeout, env=None):
-    """Run the cleanup script. Returns stderr text, or None on failure."""
+    """Run the cleanup script. Returns its output text, or None on failure.
+
+    osascript sends `log` lines (the dry-run report) to stderr and the
+    script's return value (the --senders dump) to stdout; both are wanted."""
     try:
         proc = subprocess.run(
             [str(CLEANUP), *args],
@@ -46,7 +53,7 @@ def _run(args, timeout, env=None):
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
-    return proc.stderr
+    return proc.stdout + proc.stderr
 
 
 def _run_erase(mode, timeout):
@@ -81,12 +88,51 @@ def parse_counts(text):
     return counts["Rules"], counts["Junk"], counts["Trash"]
 
 
+def parse_details(text):
+    """Per-account breakdown from dry-run output.
+
+    Returns a list of (section, account, mailbox, count) in output order, where
+    section is Rules, Junk or Trash."""
+    out = []
+    section = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        m = COUNT_PATTERN.match(line)
+        if m:
+            section = m.group(1)
+            continue
+        m = DETAIL_PATTERN.match(line)
+        if m and section and raw.startswith("  "):
+            out.append((section, m.group(1), m.group(2), int(m.group(3))))
+    return out
+
+
 def fetch_counts():
-    """Returns (rules, junk, trash), or (None, None, None) if Mail could not be read."""
+    """Returns ((rules, junk, trash), details), or ((None,)*3, []) if Mail
+    could not be read."""
     stderr = _run(["--all", "--dry-run"], COUNT_TIMEOUT)
     if stderr is None:
-        return None, None, None
-    return parse_counts(stderr)
+        return (None, None, None), []
+    return parse_counts(stderr), parse_details(stderr)
+
+
+def sender_address(sender):
+    """'Name <a@b.c>' -> 'a@b.c'; bare addresses pass through."""
+    m = ADDRESS_PATTERN.search(sender)
+    return (m.group(1) if m else sender).strip().lower()
+
+
+def top_senders(text, limit=TOP_SENDERS):
+    """Tally a --senders dump by address. Returns [(address, count)]."""
+    tally = Counter(sender_address(line) for line in text.splitlines() if line.strip())
+    return tally.most_common(limit)
+
+
+def fetch_top_senders():
+    out = _run(["--senders"], COUNT_TIMEOUT)
+    if out is None:
+        return []
+    return top_senders(out)
 
 
 def preview_rule(rule):
@@ -111,6 +157,7 @@ def load_rules():
         line = line.strip()
         if line and not line.startswith("#") and (
             line.startswith("from:") or line.startswith("subject:")
+            or line.startswith("keep:")
         ):
             out.append(line)
     return out
@@ -152,8 +199,18 @@ class MailCleanupMenuBar(rumps.App):
         self.counts = (None, None, None)
 
         self.status_item = rumps.MenuItem("Checking…")
+        self.accounts_item = item(
+            "By Account", None, "Junk, Deleted and Matched counts per account.")
+        self.accounts_item.add(rumps.MenuItem("Checking…"))
+        self.senders_item = item(
+            "Top Senders", None,
+            "Most frequent senders in your inboxes. Click one to add a from: rule for it.")
+        self.senders_item.add(rumps.MenuItem("Checking…"))
         self.menu = [
             self.status_item,
+            self.accounts_item,
+            None,
+            self.senders_item,
             None,
             item("Clear Matched", self.clear_matched,
                  "Move inbox messages that match your rules to the Trash."),
@@ -181,7 +238,7 @@ class MailCleanupMenuBar(rumps.App):
     def _set_status(self, text):
         self.status_item.title = text
 
-    def _apply_counts(self, rules, junk, trash):
+    def _apply_counts(self, rules, junk, trash, details=None):
         self.counts = (rules, junk, trash)
         if junk is None:
             self.title = "✉"
@@ -192,6 +249,50 @@ class MailCleanupMenuBar(rumps.App):
         self.status_item.title = (
             f"Junk: {junk} · Deleted: {trash} · Matched: {rules}"
         )
+        if details is not None:
+            self._fill_accounts_menu(details)
+
+    def _fill_accounts_menu(self, details):
+        per = {}
+        for section, account, _mailbox, n in details:
+            per.setdefault(account, {"Junk": 0, "Trash": 0, "Rules": 0})
+            per[account][section] += n
+        menu = self.accounts_item
+        if len(menu):
+            menu.clear()
+        if not per:
+            menu.add(rumps.MenuItem("Nothing to clean"))
+            return
+        for account in sorted(per):
+            c = per[account]
+            menu.add(rumps.MenuItem(
+                f"{account}: junk {c['Junk']} · deleted {c['Trash']} · matched {c['Rules']}"
+            ))
+
+    def _apply_top_senders(self, senders):
+        menu = self.senders_item
+        if len(menu):
+            menu.clear()
+        if not senders:
+            menu.add(rumps.MenuItem("No inbox mail found"))
+            return
+        rules = set(load_rules())
+        for address, n in senders:
+            rule = f"from:{address}"
+            if rule in rules:
+                menu.add(item(f"{n:>5}  {address}  (rule exists)", None,
+                              "A from: rule for this address is already active."))
+            elif f"keep:{address}" in rules:
+                menu.add(item(f"{n:>5}  {address}  (kept)", None,
+                              "This address is on your keep list."))
+            else:
+                menu.add(item(f"{n:>5}  {address}", self._top_sender_callback(address),
+                              f"Add a rule to trash inbox mail from {address}."))
+
+    def _top_sender_callback(self, address):
+        def cb(_):
+            self._preview_and_add("from", address)
+        return cb
 
     # --- rules menu -------------------------------------------------------
 
@@ -208,19 +309,25 @@ class MailCleanupMenuBar(rumps.App):
         menu.add(item(
             "Add Sender Rule…", self.add_sender_rule,
             "Trash inbox mail whose sender (name or address) contains the text.\n"
-            "Case-insensitive, partial match.\n"
-            "Examples: news@example.com, @marketing.example.net, Acme Sales",
+            "Case-insensitive, partial match. Add ' older:30d' to only trash mail older than 30 days.\n"
+            "Examples: news@example.com, @marketing.example.net, Acme Sales older:14d",
         ))
         menu.add(item(
             "Add Subject Rule…", self.add_subject_rule,
             "Trash inbox mail whose subject contains the text.\n"
-            "Case-insensitive, partial match.\n"
-            "Examples: Weekly Digest, your invoice, [Newsletter]",
+            "Case-insensitive, partial match. Add ' older:30d' to only trash mail older than 30 days.\n"
+            "Examples: Weekly Digest, your invoice, [Newsletter] older:7d",
+        ))
+        menu.add(item(
+            "Add Keep Rule…", self.add_keep_rule,
+            "Never trash mail whose sender contains the text, even if another rule matches.\n"
+            "Examples: boss@work.com, @mycompany.com",
         ))
         menu.add(item(
             "Edit Rules File", self.open_rules,
             f"Open {RULES} in your editor.\n"
-            "One rule per line: from:<text> or subject:<text>. Lines starting with # are comments.",
+            "One rule per line: from:<text>, subject:<text> or keep:<text>, optionally followed by\n"
+            "' older:30d'. Lines starting with # are comments.",
         ))
         rules = load_rules()
         if rules:
@@ -228,7 +335,8 @@ class MailCleanupMenuBar(rumps.App):
             for rule in rules:
                 menu.add(item(
                     rule, self._remove_rule_callback(rule),
-                    "Click to remove this rule.",
+                    "Safelist: never trashed by a rule. Click to remove."
+                    if rule.startswith("keep:") else "Click to remove this rule.",
                 ))
 
     def _refresh_rules_menu(self):
@@ -265,7 +373,14 @@ class MailCleanupMenuBar(rumps.App):
         text = resp.text.strip()
         if not text:
             return
+        self._preview_and_add(kind, text)
+
+    def _preview_and_add(self, kind, text):
         rule = f"{kind}:{text}"
+        if kind == "keep":
+            # Nothing to preview: a keep rule only ever reduces what is trashed.
+            self._confirm_rule(rule, None)
+            return
         self._set_status("Previewing rule…")
 
         def work():
@@ -275,7 +390,9 @@ class MailCleanupMenuBar(rumps.App):
         threading.Thread(target=work, daemon=True).start()
 
     def _confirm_rule(self, rule, n):
-        if n is None:
+        if rule.startswith("keep:"):
+            body = "Mail from this sender will never be trashed by a rule. Add it?"
+        elif n is None:
             body = "Could not count matches (is Mail running?). Add anyway?"
         else:
             body = f"Matches {n} inbox message{'s' if n != 1 else ''} right now. Add it?"
@@ -292,6 +409,14 @@ class MailCleanupMenuBar(rumps.App):
             "Trash inbox mail whose sender contains this text.\n"
             "Matches the display name or address, case-insensitive, partial match.\n"
             "Examples: news@example.com   @marketing.example.net   Acme Sales",
+        )
+
+    def add_keep_rule(self, _):
+        self._prompt_rule(
+            "keep", "Add Keep Rule",
+            "Never trash inbox mail whose sender contains this text,\n"
+            "even when a from: or subject: rule matches it.\n"
+            "Examples: boss@work.com   @mycompany.com",
         )
 
     def add_subject_rule(self, _):
@@ -312,8 +437,10 @@ class MailCleanupMenuBar(rumps.App):
 
     def _refresh_async(self):
         def work():
-            rules, junk, trash = fetch_counts()
-            AppHelper.callAfter(self._apply_counts, rules, junk, trash)
+            (rules, junk, trash), details = fetch_counts()
+            AppHelper.callAfter(self._apply_counts, rules, junk, trash, details)
+            senders = fetch_top_senders()
+            AppHelper.callAfter(self._apply_top_senders, senders)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -340,16 +467,17 @@ class MailCleanupMenuBar(rumps.App):
             # Counts are refreshed every few minutes and after every action,
             # so the cached figure is a good enough "before". Only fall back
             # to a count pass when we have never managed one.
-            before_counts = cached if cached[1] is not None else fetch_counts()
+            before_counts = cached if cached[1] is not None else fetch_counts()[0]
             before = self._measure(mode, *before_counts)
 
             # The erase is synchronous, so a single re-count afterwards is
             # enough. No polling loop.
             failed = not _run_erase(mode, ERASE_TIMEOUT)
-            rules, junk, trash = fetch_counts()
+            (rules, junk, trash), details = fetch_counts()
 
             AppHelper.callAfter(
-                self._finish_erase, mode, label, before, rules, junk, trash, failed
+                self._finish_erase, mode, label, before, rules, junk, trash,
+                details, failed,
             )
 
         threading.Thread(target=work, daemon=True).start()
@@ -368,9 +496,9 @@ class MailCleanupMenuBar(rumps.App):
             return trash
         return rules + junk + trash
 
-    def _finish_erase(self, mode, label, before, rules, junk, trash, failed):
+    def _finish_erase(self, mode, label, before, rules, junk, trash, details, failed):
         self.busy = False
-        self._apply_counts(rules, junk, trash)
+        self._apply_counts(rules, junk, trash, details)
 
         if failed or junk is None:
             rumps.notification(

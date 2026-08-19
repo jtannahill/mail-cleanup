@@ -102,3 +102,51 @@ def test_measure_per_mode(mod, mode, expected):
 
 def test_measure_treats_none_as_zero(mod):
     assert mod.MailCleanupMenuBar._measure("--all", None, None, None) == 0
+
+
+DRY_RUN = """Rules: would erase 3 messages
+  Work/Inbox: 3
+Junk: none found
+Trash: would erase 12 messages
+  Work/Trash: 10
+  Home/Deleted Messages: 2
+"""
+
+
+def test_parse_details_sections_and_accounts(mod):
+    assert mod.parse_details(DRY_RUN) == [
+        ("Rules", "Work", "Inbox", 3),
+        ("Trash", "Work", "Trash", 10),
+        ("Trash", "Home", "Deleted Messages", 2),
+    ]
+
+
+def test_parse_details_empty(mod):
+    assert mod.parse_details("Junk: none found\n") == []
+
+
+@pytest.mark.parametrize(
+    "sender,address",
+    [
+        ("Jane Doe <Jane@Example.com>", "jane@example.com"),
+        ("bare@example.com", "bare@example.com"),
+        ("  <x@y.z>  ", "x@y.z"),
+    ],
+)
+def test_sender_address(mod, sender, address):
+    assert mod.sender_address(sender) == address
+
+
+def test_top_senders_tallies_by_address(mod):
+    dump = "A <a@x.com>\nB <b@x.com>\na@x.com\n\nA2 <A@X.COM>\n"
+    assert mod.top_senders(dump) == [("a@x.com", 3), ("b@x.com", 1)]
+
+
+def test_top_senders_limit(mod):
+    dump = "\n".join(f"u{i}@x.com" for i in range(20))
+    assert len(mod.top_senders(dump, limit=5)) == 5
+
+
+def test_load_rules_accepts_keep(mod):
+    mod.RULES.write_text("keep:boss@work.com\nfrom:x@y.z older:30d\n")
+    assert mod.load_rules() == ["keep:boss@work.com", "from:x@y.z older:30d"]

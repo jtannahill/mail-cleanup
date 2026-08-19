@@ -55,9 +55,13 @@ An envelope icon appears in the menu bar with the total count of junk, deleted
 and rule-matched messages. The menu offers:
 
 - Clear Matched / Clear Junk / Clear Deleted / Clear All
-- Rules: Add Sender Rule, Add Subject Rule, Edit Rules File, and one entry per
-  existing rule (click to remove). Adding a rule first shows how many inbox
-  messages it matches right now, so you can back out of an over-broad one.
+- By Account: junk, deleted and matched counts per account.
+- Top Senders: the most frequent senders across your inboxes. Click one to add
+  a from: rule for it (after a preview of how many messages it matches).
+- Rules: Add Sender Rule, Add Subject Rule, Add Keep Rule, Edit Rules File, and
+  one entry per existing rule (click to remove). Adding a rule first shows how
+  many inbox messages it matches right now, so you can back out of an
+  over-broad one. Hover any item for help.
 - Refresh Counts, Open Log, Quit
 
 Counts refresh every 5 minutes and after every action.
@@ -71,7 +75,15 @@ Counts refresh every 5 minutes and after every action.
 from:newsletter@example.com
 from:@marketing.example.net
 subject:Weekly Digest
+from:receipts@shop.example older:30d    # only mail older than 30 days
+keep:boss@work.com                      # never trashed, overrides any rule
 ```
+
+- `from:` and `subject:` rules trash matching inbox mail.
+- An optional trailing ` older:Nd` limits a rule to mail received more than N
+  days ago, so you can keep recent mail from a sender and purge the backlog.
+- `keep:` is a safelist on the sender. Anything matching a keep rule is never
+  trashed by a rule, whatever else matches.
 
 Matching is a case-insensitive "contains" test against the sender (display
 name and address) or the subject, in the Inbox of every account. All rules are
@@ -82,7 +94,7 @@ the trash is emptied.
 ## Command line
 
 ```
-~/.local/share/mail-cleanup/mail-cleanup.sh [--rules|--junk|--trash|--all] [--dry-run] [--quiet]
+~/.local/share/mail-cleanup/mail-cleanup.sh [--rules|--junk|--trash|--all|--senders] [--dry-run] [--quiet]
 ```
 
 `--dry-run` prints what would be erased, per account. The CLI path needs
