@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 
 import rumps
-from AppKit import NSApplication
+from AppKit import NSAlert, NSApplication, NSImage, NSWorkspace
 from PyObjCTools import AppHelper
 
 BIN = Path(__file__).resolve().parent
@@ -182,6 +182,31 @@ def remove_rule(rule):
     RULES.write_text("\n".join(kept) + ("\n" if kept else ""))
 
 
+_MAIL_ICON = None
+
+
+def mail_icon():
+    """Mail's own app icon, for dialogs. Falls back to the generic app icon."""
+    global _MAIL_ICON
+    if _MAIL_ICON is None:
+        ws = NSWorkspace.sharedWorkspace()
+        path = ws.absolutePathForAppBundleWithIdentifier_("com.apple.mail")
+        _MAIL_ICON = ws.iconForFile_(path) if path else NSImage.imageNamed_("NSApplicationIcon")
+    return _MAIL_ICON
+
+
+def confirm(title, body, ok="OK", cancel="Cancel"):
+    """Modal yes/no with Mail's icon. Returns True when the ok button is hit."""
+    alert = NSAlert.alloc().init()
+    alert.setMessageText_(title)
+    alert.setInformativeText_(body)
+    alert.setIcon_(mail_icon())
+    alert.addButtonWithTitle_(ok)
+    alert.addButtonWithTitle_(cancel)
+    NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    return alert.runModal() == 1000  # NSAlertFirstButtonReturn
+
+
 def item(title, callback=None, tip=None):
     """rumps.MenuItem with an optional hover tooltip (NSMenuItem toolTip)."""
     mi = rumps.MenuItem(title, callback=callback)
@@ -344,11 +369,7 @@ class MailCleanupMenuBar(rumps.App):
 
     def _remove_rule_callback(self, rule):
         def cb(_):
-            self._bring_to_front()
-            answer = rumps.alert(
-                "Remove rule?", rule, ok="Remove", cancel="Cancel"
-            )
-            if answer == 1:
+            if confirm(rule, "Remove this rule?", ok="Remove"):
                 remove_rule(rule)
                 self._refresh_rules_menu()
                 self.refresh_now(None)
@@ -361,10 +382,12 @@ class MailCleanupMenuBar(rumps.App):
         # right before showing the window.
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
-    def _prompt_rule(self, kind, title, message):
+    def _prompt_rule(self, kind, title, message, placeholder):
         win = rumps.Window(
-            message=message, title=title, ok="Add", cancel="Cancel", dimensions=(320, 24)
+            message=message, title=title, ok="Add", cancel="Cancel", dimensions=(380, 24)
         )
+        win._alert.setIcon_(mail_icon())
+        win._textfield.setPlaceholderString_(placeholder)
         self._bring_to_front()
         win._alert.window().makeFirstResponder_(win._textfield)
         resp = win.run()
@@ -391,40 +414,39 @@ class MailCleanupMenuBar(rumps.App):
 
     def _confirm_rule(self, rule, n):
         if rule.startswith("keep:"):
-            body = "Mail from this sender will never be trashed by a rule. Add it?"
+            body = "Mail from this sender will never be trashed by a rule."
         elif n is None:
-            body = "Could not count matches (is Mail running?). Add anyway?"
+            body = "Could not count matches. Is Mail running?"
+        elif n == 0:
+            body = "Matches no inbox mail right now. It will apply to future mail."
         else:
-            body = f"Matches {n} inbox message{'s' if n != 1 else ''} right now. Add it?"
-        self._bring_to_front()
-        answer = rumps.alert("Add rule?", f"{rule}\n\n{body}", ok="Add", cancel="Cancel")
-        if answer == 1:
+            body = f"Matches {n} inbox message{'s' if n != 1 else ''} right now."
+        if confirm(rule, body, ok="Add Rule"):
             add_rule(*rule.split(":", 1))
             self._refresh_rules_menu()
         self.refresh_now(None)
 
     def add_sender_rule(self, _):
         self._prompt_rule(
-            "from", "Add Sender Rule",
-            "Trash inbox mail whose sender contains this text.\n"
-            "Matches the display name or address, case-insensitive, partial match.\n"
-            "Examples: news@example.com   @marketing.example.net   Acme Sales",
+            "from", "Trash inbox mail whose sender contains:",
+            "Name or address, partial match, case-insensitive.\n"
+            "Append  older:30d  to limit it to older mail.",
+            "news@example.com",
         )
 
     def add_keep_rule(self, _):
         self._prompt_rule(
-            "keep", "Add Keep Rule",
-            "Never trash inbox mail whose sender contains this text,\n"
-            "even when a from: or subject: rule matches it.\n"
-            "Examples: boss@work.com   @mycompany.com",
+            "keep", "Never trash mail whose sender contains:",
+            "Overrides every other rule. Partial match, case-insensitive.",
+            "boss@work.com",
         )
 
     def add_subject_rule(self, _):
         self._prompt_rule(
-            "subject", "Add Subject Rule",
-            "Trash inbox mail whose subject contains this text.\n"
-            "Case-insensitive, partial match. Re: and Fwd: prefixes still match.\n"
-            "Examples: Weekly Digest   your invoice   [Newsletter]",
+            "subject", "Trash inbox mail whose subject contains:",
+            "Partial match, case-insensitive.\n"
+            "Append  older:30d  to limit it to older mail.",
+            "Weekly Digest",
         )
 
     def open_rules(self, _):

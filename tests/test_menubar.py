@@ -32,7 +32,8 @@ def mod(tmp_path, monkeypatch):
     rumps.quit_application = lambda: None
     monkeypatch.setitem(sys.modules, "rumps", rumps)
     appkit = types.ModuleType("AppKit")
-    appkit.NSApplication = _Stub
+    for name in ("NSAlert", "NSApplication", "NSImage", "NSWorkspace"):
+        setattr(appkit, name, _Stub)
     monkeypatch.setitem(sys.modules, "AppKit", appkit)
     helper = types.ModuleType("PyObjCTools.AppHelper")
     helper.callAfter = lambda f, *a: f(*a)
