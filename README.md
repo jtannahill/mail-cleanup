@@ -26,7 +26,8 @@ Everything is logged to `~/Library/Logs/mail-cleanup.log`.
 With Homebrew:
 
 ```bash
-brew install jtannahill/tap/mail-cleanup
+brew tap jtannahill/tap && brew trust jtannahill/tap   # trust is a one-time Homebrew prompt for third-party taps
+brew install mail-cleanup
 mail-cleanup-setup                  # builds the app, starts the menubar
 mail-cleanup-setup --schedule 06:00 # also run "--all" every day at 6 am
 ```
