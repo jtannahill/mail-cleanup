@@ -49,8 +49,8 @@ unload() {
 load() {
   # bootout is asynchronous; a bootstrap issued straight after it can fail
   # with "service already loaded", so retry briefly.
-  local i
-  for i in 1 2 3 4 5; do
+  local _try
+  for _try in 1 2 3 4 5; do
     if launchctl bootstrap "gui/$UID_NUM" "$1" 2>/dev/null; then return 0; fi
     sleep 1
   done

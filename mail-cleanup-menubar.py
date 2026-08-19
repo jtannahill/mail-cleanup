@@ -6,6 +6,7 @@ menu title goes through AppHelper.callAfter. Work that shells out to
 osascript runs on a worker thread and marshals its result back.
 """
 
+import os
 import re
 import subprocess
 import threading
@@ -32,7 +33,7 @@ ERASE_TIMEOUT = 600
 COUNT_PATTERN = re.compile(r"^(Rules|Junk|Trash): would erase (\d+) messages")
 
 
-def _run(args, timeout):
+def _run(args, timeout, env=None):
     """Run the cleanup script. Returns stderr text, or None on failure."""
     try:
         proc = subprocess.run(
@@ -40,6 +41,7 @@ def _run(args, timeout):
             capture_output=True,
             text=True,
             timeout=timeout,
+            env={**os.environ, **(env or {})},
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -69,18 +71,32 @@ def _run_erase(mode, timeout):
     return proc.returncode == 0
 
 
+def parse_counts(text):
+    counts = {"Rules": 0, "Junk": 0, "Trash": 0}
+    for line in text.splitlines():
+        m = COUNT_PATTERN.match(line.strip())
+        if m:
+            counts[m.group(1)] = int(m.group(2))
+    return counts["Rules"], counts["Junk"], counts["Trash"]
+
+
 def fetch_counts():
     """Returns (rules, junk, trash), or (None, None, None) if Mail could not be read."""
     stderr = _run(["--all", "--dry-run"], COUNT_TIMEOUT)
     if stderr is None:
         return None, None, None
+    return parse_counts(stderr)
 
-    counts = {"Rules": 0, "Junk": 0, "Trash": 0}
-    for line in stderr.splitlines():
-        m = COUNT_PATTERN.match(line.strip())
-        if m:
-            counts[m.group(1)] = int(m.group(2))
-    return counts["Rules"], counts["Junk"], counts["Trash"]
+
+def preview_rule(rule):
+    """How many inbox messages a single rule would trash right now, or None."""
+    stderr = _run(
+        ["--rules", "--dry-run"], COUNT_TIMEOUT,
+        env={"MAIL_CLEANUP_RULES_OVERRIDE": rule},
+    )
+    if stderr is None:
+        return None
+    return parse_counts(stderr)[0]
 
 
 # --- rules file -----------------------------------------------------------
@@ -122,6 +138,9 @@ class MailCleanupMenuBar(rumps.App):
     def __init__(self):
         super().__init__("✉", quit_button=None)
         self.busy = False
+        # Last known (rules, junk, trash). Used as the "before" figure for an
+        # erase so each click costs one count pass, not two.
+        self.counts = (None, None, None)
 
         self.status_item = rumps.MenuItem("Checking…")
         self.menu = [
@@ -150,6 +169,7 @@ class MailCleanupMenuBar(rumps.App):
         self.status_item.title = text
 
     def _apply_counts(self, rules, junk, trash):
+        self.counts = (rules, junk, trash)
         if junk is None:
             self.title = "✉"
             self.status_item.title = "Mail counts unavailable"
@@ -206,8 +226,24 @@ class MailCleanupMenuBar(rumps.App):
         text = resp.text.strip()
         if not text:
             return
-        add_rule(kind, text)
-        self._refresh_rules_menu()
+        rule = f"{kind}:{text}"
+        self._set_status("Previewing rule…")
+
+        def work():
+            n = preview_rule(rule)
+            AppHelper.callAfter(self._confirm_rule, rule, n)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _confirm_rule(self, rule, n):
+        if n is None:
+            body = "Could not count matches (is Mail running?). Add anyway?"
+        else:
+            body = f"Matches {n} inbox message{'s' if n != 1 else ''} right now. Add it?"
+        answer = rumps.alert("Add rule?", f"{rule}\n\n{body}", ok="Add", cancel="Cancel")
+        if answer == 1:
+            add_rule(*rule.split(":", 1))
+            self._refresh_rules_menu()
         self.refresh_now(None)
 
     def add_sender_rule(self, _):
@@ -254,8 +290,14 @@ class MailCleanupMenuBar(rumps.App):
         self.busy = True
         self._set_status(f"Erasing {label.lower()}…")
 
+        cached = self.counts
+
         def work():
-            before = self._measure(mode, *fetch_counts())
+            # Counts are refreshed every few minutes and after every action,
+            # so the cached figure is a good enough "before". Only fall back
+            # to a count pass when we have never managed one.
+            before_counts = cached if cached[1] is not None else fetch_counts()
+            before = self._measure(mode, *before_counts)
 
             # The erase is synchronous, so a single re-count afterwards is
             # enough. No polling loop.

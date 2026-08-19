@@ -121,13 +121,20 @@ on rulesPath()
   return (POSIX path of (path to home folder)) & ".config/mail-cleanup/rules.txt"
 end rulesPath
 
+-- MAIL_CLEANUP_RULES_OVERRIDE (newline-separated rules) replaces the file, so
+-- the menubar can preview a rule before saving it.
 on loadRules()
   set ruleList to {}
-  set rp to my rulesPath()
   set raw to ""
   try
-    set raw to do shell script "cat " & quoted form of rp & " 2>/dev/null || true"
+    set raw to system attribute "MAIL_CLEANUP_RULES_OVERRIDE"
   end try
+  if raw is "" then
+    set rp to my rulesPath()
+    try
+      set raw to do shell script "cat " & quoted form of rp & " 2>/dev/null || true"
+    end try
+  end if
   repeat with aLine in paragraphs of raw
     set t to my trimText(aLine as text)
     if t is not "" and t does not start with "#" then
@@ -155,63 +162,85 @@ on trimText(t)
   return t
 end trimText
 
--- Mail's `whose` filters are case-insensitive for `contains`, so a single
--- query per rule and inboxBox does the matching.
-on matchingMessages(inboxBox, aRule)
-  set kindOf to item 1 of aRule
-  set needle to item 2 of aRule
-  tell application "Mail"
-    if kindOf is "from" then
-      return (every message of inboxBox whose sender contains needle)
-    else
-      return (every message of inboxBox whose subject contains needle)
-    end if
-  end tell
-end matchingMessages
+-- One `whose` query per inbox covering every rule at once. Mail evaluates a
+-- compound filter far faster than one round trip per rule, and the cost stays
+-- flat as the rule list grows. The filter is built from the rules at runtime
+-- and compiled once into a script object with a matchIn(mailbox) handler.
+on escapeForSource(t)
+  set AppleScript's text item delimiters to "\\"
+  set parts to text items of t
+  set AppleScript's text item delimiters to "\\\\"
+  set t to parts as text
+  set AppleScript's text item delimiters to "\""
+  set parts to text items of t
+  set AppleScript's text item delimiters to "\\\""
+  set t to parts as text
+  set AppleScript's text item delimiters to ""
+  return t
+end escapeForSource
 
--- Returns {totalCount, detailText}; detail lines are account/rule/count.
+on buildMatcher(ruleList)
+  set clauses to {}
+  repeat with aRule in ruleList
+    set needle to my escapeForSource(item 2 of aRule)
+    if (item 1 of aRule) is "from" then
+      set end of clauses to "sender contains \"" & needle & "\""
+    else
+      set end of clauses to "subject contains \"" & needle & "\""
+    end if
+  end repeat
+  set AppleScript's text item delimiters to " or "
+  set filterText to clauses as text
+  set AppleScript's text item delimiters to ""
+  set src to "script matcher" & linefeed & ¬
+    "on matchIn(mb)" & linefeed & ¬
+    "tell application \"Mail\" to return every message of mb whose (" & filterText & ")" & linefeed & ¬
+    "end matchIn" & linefeed & ¬
+    "end script" & linefeed & "return matcher"
+  return run script src
+end buildMatcher
+
+-- Returns {totalCount, detailText}; detail lines are account/Inbox/count.
 on countRuleMatches()
   set ruleList to my loadRules()
+  if (count of ruleList) is 0 then return {0, ""}
+  set matcher to my buildMatcher(ruleList)
   set totalCount to 0
   set details to ""
-  if (count of ruleList) is 0 then return {0, ""}
   tell application "Mail"
     if not running then launch
     repeat with acct in every account
       set acctName to name of acct
       repeat with inboxBox in (every mailbox of acct whose name is "INBOX" or name is "Inbox")
-        repeat with aRule in ruleList
-          set n to count of (my matchingMessages(inboxBox, aRule))
-          if n > 0 then
-            set totalCount to totalCount + n
-            set details to details & acctName & tab & (item 1 of aRule) & ":" & (item 2 of aRule) & tab & n & linefeed
-          end if
-        end repeat
+        set n to count of (matcher's matchIn(inboxBox))
+        if n > 0 then
+          set totalCount to totalCount + n
+          set details to details & acctName & tab & "Inbox" & tab & n & linefeed
+        end if
       end repeat
     end repeat
   end tell
   return {totalCount, details}
 end countRuleMatches
 
--- Moves matched inboxBox messages to the account trash (Mail's `delete`).
+-- Moves matched inbox messages to the account trash (Mail's `delete`).
 on eraseRuleMatches(logPath)
   set ruleList to my loadRules()
-  set failures to 0
   if (count of ruleList) is 0 then return 0
+  set matcher to my buildMatcher(ruleList)
+  set failures to 0
   tell application "Mail"
     if not running then launch
     repeat with acct in every account
       set acctName to name of acct
       repeat with inboxBox in (every mailbox of acct whose name is "INBOX" or name is "Inbox")
-        repeat with aRule in ruleList
-          try
-            set hits to my matchingMessages(inboxBox, aRule)
-            if (count of hits) > 0 then delete hits
-          on error errMsg
-            set failures to failures + 1
-            my writeLog(logPath, "ERROR: " & acctName & "/" & (item 1 of aRule) & ":" & (item 2 of aRule) & ": " & errMsg)
-          end try
-        end repeat
+        try
+          set hits to matcher's matchIn(inboxBox)
+          if (count of hits) > 0 then delete hits
+        on error errMsg
+          set failures to failures + 1
+          my writeLog(logPath, "ERROR: " & acctName & "/Inbox: " & errMsg)
+        end try
       end repeat
     end repeat
   end tell

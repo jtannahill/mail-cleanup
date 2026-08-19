@@ -56,7 +56,8 @@ and rule-matched messages. The menu offers:
 
 - Clear Matched / Clear Junk / Clear Deleted / Clear All
 - Rules: Add Sender Rule, Add Subject Rule, Edit Rules File, and one entry per
-  existing rule (click to remove)
+  existing rule (click to remove). Adding a rule first shows how many inbox
+  messages it matches right now, so you can back out of an over-broad one.
 - Refresh Counts, Open Log, Quit
 
 Counts refresh every 5 minutes and after every action.
@@ -73,9 +74,10 @@ subject:Weekly Digest
 ```
 
 Matching is a case-insensitive "contains" test against the sender (display
-name and address) or the subject, in the Inbox of every account. Matches are
-moved to that account's Trash, so a mistake is recoverable until the trash is
-emptied.
+name and address) or the subject, in the Inbox of every account. All rules are
+combined into one query per inbox, so adding rules costs almost nothing.
+Matches are moved to that account's Trash, so a mistake is recoverable until
+the trash is emptied.
 
 ## Command line
 
@@ -105,6 +107,14 @@ compiled into `Mail Cleanup.app` and everything that erases goes through it.
 - **"Mail Cleanup is not allowed assistive access"**: add or re-add the app
   under Accessibility. Every rebuild invalidates the old grant.
 - Watch macOS decide: `log stream --predicate 'process == "tccd" OR process == "applet"'`.
+
+## Development
+
+```bash
+uv run --with pytest pytest      # or: pip install pytest && pytest
+shellcheck install.sh uninstall.sh build-app.sh mail-cleanup.sh
+./install.sh                     # re-install your working copy
+```
 
 ## Uninstall
 
