@@ -378,6 +378,19 @@ on eraseTrashViaMenu(logPath)
   end try
 
   set failures to 0
+  -- Check the grant up front. Without it the menu click below fails anyway,
+  -- and this avoids dragging Mail to the front for nothing.
+  set trusted to false
+  try
+    tell application "System Events" to set trusted to UI elements enabled
+  end try
+  if not trusted then
+    my writeLog(logPath, "ERROR: trash erase skipped: Mail Cleanup is not allowed assistive access. Opening System Settings > Privacy & Security > Accessibility; enable Mail Cleanup there, then run again.")
+    try
+      do shell script "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'"
+    end try
+    return 1
+  end if
   try
     tell application "Mail" to activate
     tell application "System Events"

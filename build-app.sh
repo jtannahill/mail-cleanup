@@ -47,7 +47,22 @@ fi
 # Accessibility grants to the signature, so each rebuild forces the user to
 # re-grant. Set CODESIGN_IDENTITY to a Developer ID or self-signed code-signing
 # certificate in your keychain to get a stable identity that survives rebuilds.
-codesign --force --sign "${CODESIGN_IDENTITY:--}" "$APP"
+# Pick the identity: CODESIGN_IDENTITY if set, else the first valid
+# code-signing certificate in the keychain (an Apple Development or Developer
+# ID cert is stable across rebuilds), else ad-hoc as a last resort.
+IDENTITY="${CODESIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+  IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/^ *1) \([0-9A-F]\{40\}\) .*/\1/p')"
+fi
+if [ -z "$IDENTITY" ]; then
+  IDENTITY="-"
+  echo "WARNING: no code-signing certificate found; signing ad-hoc." >&2
+  echo "         Accessibility must be re-granted after every rebuild." >&2
+else
+  echo "Signing with: $(security find-identity -v -p codesigning | grep "$IDENTITY" | sed 's/^ *[0-9]*) [0-9A-F]* //')"
+fi
+codesign --force --sign "$IDENTITY" "$APP"
 codesign --verify --verbose=1 "$APP"
 
 echo "Rebuilt: $APP"

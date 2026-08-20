@@ -53,12 +53,14 @@ Then grant two permissions (macOS requires both to be done by hand):
 2. **Accessibility** (only needed to empty the trash): System Settings >
    Privacy & Security > Accessibility > add `~/Applications/Mail Cleanup.app`.
 
-Both grants are tied to the app's code signature. By default the app is ad-hoc
-signed, which changes on every rebuild, so you must re-add it under
-Accessibility after each `build-app.sh` or re-install. To avoid that, export
-`CODESIGN_IDENTITY="Your Certificate Name"` (a Developer ID or a self-signed
-code-signing certificate from Keychain Access) before installing; the
-signature is then stable across rebuilds.
+Both grants are tied to the app's code signature. `build-app.sh` signs with the
+first valid code-signing certificate in your keychain (Apple Development,
+Developer ID, or a self-signed code-signing certificate from Keychain Access),
+which keeps the grants stable across rebuilds. Set `CODESIGN_IDENTITY` to pick
+a specific one. With no certificate it falls back to ad-hoc signing, which
+changes on every rebuild, so you must re-add the app under Accessibility after
+each `build-app.sh` or re-install. If the grant is missing, the trash pass logs
+the problem and opens the Accessibility pane for you.
 
 ## Menubar
 
